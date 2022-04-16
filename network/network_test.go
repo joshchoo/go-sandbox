@@ -82,6 +82,10 @@ func handleConn(conn net.Conn, done chan struct{}) error {
 
 	for {
 		b := make([]byte, 1024)
+		// It is a good practice to set a deadline for Read/Write from the connection.
+		if err := conn.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
+			return err
+		}
 		n, err := conn.Read(b)
 		if err != nil {
 			if nErr, ok := err.(net.Error); ok && nErr.Timeout() {

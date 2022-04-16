@@ -193,3 +193,109 @@ func TestDialContextCanceled(t *testing.T) {
 		t.Errorf("Expected canceled, got %q", ctx.Err())
 	}
 }
+
+func TestPingerAdvanceDeadline(t *testing.T) {
+	listener, err := net.Listen("tcp", "localhost:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	startTime := time.Now()
+	done := make(chan struct{})
+
+	// This goroutines simulates a server periodically pinging the client and checking for a heartbeat ("pong").
+	// The server expects to receive a "pong" from the client at least once every five seconds to confirm that the client is still alive.
+	go func() {
+		defer func() { close(done) }()
+
+		conn, err := listener.Accept()
+		if err != nil {
+			t.Log(err)
+			return
+		}
+		defer conn.Close()
+
+		// Send a ping every second
+		ctx, cancel := context.WithCancel(context.Background())
+		defer func() {
+			cancel()
+		}()
+		resetTimerIntervalCh := make(chan time.Duration, 1)
+		resetTimerIntervalCh <- 1 * time.Second
+		// Ping the client at each time interval
+		go network.Pinger(ctx, conn, resetTimerIntervalCh)
+
+		// Continuously read from connection
+		buf := make([]byte, 1024)
+		for {
+			// Update the connection's read and write deadlines
+			err = conn.SetDeadline(time.Now().Add(5 * time.Second))
+			if err != nil {
+				t.Error(err)
+				return
+			}
+
+			n, err := conn.Read(buf)
+			// error may occur due to connection timeout, disconnect, io.EOF, etc
+			if err != nil {
+				if nErr, ok := err.(net.Error); ok && nErr.Timeout() {
+					t.Logf("[server: %s] Read deadline timeout exceeded. Exiting.", time.Since(startTime).Truncate(time.Second))
+					return
+				}
+				t.Error(err)
+			}
+			t.Logf("[server: %s] Got: %s", time.Since(startTime).Truncate(time.Second), buf[:n])
+
+			// now reset the Pinger's timer to the default interval (30 seconds) so that we can trigger a read deadline exceeded.
+			resetTimerIntervalCh <- 0
+		}
+	}()
+
+	// Client dials the server
+	conn, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	// Receive 4 pings from the server. One ping per second.
+	// The total wait time of 4 seconds is still within the server's read deadline of 5 seconds.
+	// Then send a "pong" to the server.
+	buf := make([]byte, 1024)
+	for i := 0; i < 4; i++ {
+		n, err := conn.Read(buf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("[client: %s] Got: %s", time.Since(startTime).Truncate(time.Second), buf[:n])
+	}
+	_, err = conn.Write([]byte("pong"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// After the server received the "pong", the Ping interval changes to 30 seconds.
+	// The server's read deadline will exceed before the first loop even completes,
+	// and the client receives io.EOF.
+	for i := 0; i < 4; i++ {
+		n, err := conn.Read(buf)
+		if err != nil {
+			if err != io.EOF {
+				t.Fatal(err)
+			}
+			t.Logf("[client] Received EOF")
+			break
+		}
+		t.Logf("[client: %s] Got: %s", time.Since(startTime).Truncate(time.Second), buf[:n])
+	}
+
+	// The server's read deadline will exceed 5 seconds, and return an error on conn.Read().
+	// Then it will close the `done` channel. Wait for the channel to close.
+	<-done
+
+	end := time.Since(startTime).Truncate(time.Second)
+	t.Logf("[%s] done", end)
+	if end != 9*time.Second {
+		t.Fatalf("Expected EOF at 9 seconds, got %s", end)
+	}
+}

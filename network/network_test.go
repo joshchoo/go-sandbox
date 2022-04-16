@@ -81,7 +81,9 @@ func handleConn(conn net.Conn, done chan struct{}) error {
 		b := make([]byte, 1024)
 		n, err := conn.Read(b)
 		if err != nil {
-			if err != io.EOF {
+			if nErr, ok := err.(net.Error); ok && nErr.Timeout() {
+				continue
+			} else if err != io.EOF {
 				return err
 			}
 			// EOF is received when client closes the connection (i.e sends the FIN tcp packet)

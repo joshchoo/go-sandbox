@@ -1,11 +1,14 @@
 package network_test
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/joshchoo/go-sandbox/network"
 )
@@ -91,5 +94,98 @@ func handleConn(conn net.Conn, done chan struct{}) error {
 			return nil
 		}
 		log.Printf("[server] Read %q\n", b[:n])
+	}
+}
+
+func DialTimeout(network, address string, timeout time.Duration) (net.Conn, error) {
+	// net.Dial() actually creates a nil `net.Dialer` under-the-hood.
+	d := net.Dialer{
+		Control: func(_, addr string, _ syscall.RawConn) error {
+			// Mock a DNS time-out error so that DialTimeout successfully makes a connection, but doesn't actually dials `address`.
+			return &net.DNSError{
+				Err:    "connection timed out",
+				Name:   addr,
+				Server: "127.0.0.1",
+				// Specifying `IsTimeout: true` allows us to check that the `net.Error.Timeout()` is `true`
+				IsTimeout:   true,
+				IsTemporary: true,
+			}
+		},
+		// Timeout isn't actually used because we mocked `Control`
+		Timeout: timeout,
+	}
+	return d.Dial(network, address)
+}
+
+func TestDialTimeout(t *testing.T) {
+	// 10.0.0.1 is a non-routable address
+	conn, err := DialTimeout("tcp", "10.0.0.1:http", 3*time.Second)
+
+	if err == nil {
+		conn.Close()
+		t.Fatal("Expected connection to timeout, but it did not")
+	}
+	nErr, ok := err.(net.Error)
+	if !ok {
+		t.Fatal(err)
+	}
+	if !nErr.Timeout() {
+		t.Fatalf("Expected timeout error, but got %q", nErr)
+	}
+}
+
+func TestDialContextDeadlineExceeded(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	d := net.Dialer{
+		Control: func(network, address string, c syscall.RawConn) error {
+			// Simulate delay that is longer than the timeout.
+			// The test will wait for this delay to complete, even if the timeout is shorter,
+			// but the test will still fail with context.DeadlineExceeded.
+			time.Sleep(100 * time.Millisecond)
+			return nil
+		},
+	}
+	conn, err := d.DialContext(ctx, "tcp", "10.0.0.1:http")
+
+	if err == nil {
+		conn.Close()
+		t.Fatal("Expected connection to timeout, but it did not")
+	}
+	nErr, ok := err.(net.Error)
+	if !ok {
+		t.Fatal(err)
+	}
+	// If context deadline is exceeded, net.Error.Timeout() will be true.
+	if !nErr.Timeout() {
+		t.Fatalf("Expected timeout error, but got %q", nErr)
+	}
+	// Ensure that the Err is due to deadline exceeded rather than context being cancelled.
+	if ctx.Err() != context.DeadlineExceeded {
+		t.Errorf("Expected deadline exceeded, got %q", ctx.Err())
+	}
+
+}
+
+func TestDialContextCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	d := net.Dialer{
+		Control: func(network, address string, c syscall.RawConn) error {
+			time.Sleep(100 * time.Millisecond)
+			return nil
+		},
+	}
+	conn, err := d.DialContext(ctx, "tcp", "10.0.0.1:http")
+
+	cancel()
+
+	if err == nil {
+		conn.Close()
+		t.Fatal("Expected connection to be canceled, but it did not")
+	}
+	if ctx.Err() != context.Canceled {
+		t.Errorf("Expected canceled, got %q", ctx.Err())
 	}
 }

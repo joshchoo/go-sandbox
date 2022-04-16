@@ -129,3 +129,83 @@ func TestFilter(t *testing.T) {
 		}
 	})
 }
+
+func TestMax(t *testing.T) {
+	t.Run("int slice", func(t *testing.T) {
+		s := []int{8, 2, -1, 11, 3}
+
+		res, err := Max(s)
+
+		if err != nil {
+			t.Errorf("Expected no error, got %q", err)
+		}
+		exp := 11
+		if res != exp {
+			t.Errorf("Expected %v, got %v", exp, res)
+		}
+	})
+
+	t.Run("float slice", func(t *testing.T) {
+		s := []float64{8.1, 2.3, -1.2, 11.34, 3.45}
+
+		res, err := Max(s)
+
+		if err != nil {
+			t.Errorf("Expected no error, got %q", err)
+		}
+		exp := 11.34
+		if res != exp {
+			t.Errorf("Expected %v, got %v", exp, res)
+		}
+	})
+
+	t.Run("empty slice", func(t *testing.T) {
+		var s []int
+
+		_, err := Max(s)
+
+		if err != ErrEmptySlice {
+			t.Errorf("Expected %q, got nil", ErrEmptySlice)
+		}
+	})
+}
+
+func TestMin(t *testing.T) {
+	t.Run("int slice", func(t *testing.T) {
+		s := []int{8, 2, -1, 11, 3}
+
+		res, err := Min(s)
+
+		if err != nil {
+			t.Errorf("Expected no error, got %q", err)
+		}
+		exp := -1
+		if res != exp {
+			t.Errorf("Expected %v, got %v", exp, res)
+		}
+	})
+
+	t.Run("float slice", func(t *testing.T) {
+		s := []float64{8.1, 2.3, -1.2, 11.34, 3.45}
+
+		res, err := Min(s)
+
+		if err != nil {
+			t.Errorf("Expected no error, got %q", err)
+		}
+		exp := -1.2
+		if res != exp {
+			t.Errorf("Expected %v, got %v", exp, res)
+		}
+	})
+
+	t.Run("empty slice", func(t *testing.T) {
+		var s []int
+
+		_, err := Min(s)
+
+		if err != ErrEmptySlice {
+			t.Errorf("Expected %q, got nil", ErrEmptySlice)
+		}
+	})
+}

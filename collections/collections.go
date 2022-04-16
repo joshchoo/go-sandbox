@@ -1,5 +1,11 @@
 package collections
 
+import (
+	"errors"
+
+	"golang.org/x/exp/constraints"
+)
+
 func Map[Element any, Result any](s []Element, f func(e Element) Result) []Result {
 	res := make([]Result, 0, len(s))
 	for _, e := range s {
@@ -34,4 +40,36 @@ func Equals[Element comparable](s []Element, other []Element) bool {
 		}
 	}
 	return true
+}
+
+var (
+	ErrEmptySlice = errors.New("Cannot use function with empty slice.")
+)
+
+func Max[Element constraints.Ordered](s []Element) (Element, error) {
+	if len(s) == 0 {
+		var e Element
+		return e, ErrEmptySlice
+	}
+	res := s[0]
+	for _, v := range s {
+		if v > res {
+			res = v
+		}
+	}
+	return res, nil
+}
+
+func Min[Element constraints.Ordered](s []Element) (Element, error) {
+	if len(s) == 0 {
+		var e Element
+		return e, ErrEmptySlice
+	}
+	res := s[0]
+	for _, v := range s {
+		if v < res {
+			res = v
+		}
+	}
+	return res, nil
 }

@@ -2,6 +2,7 @@ package network_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -30,7 +31,6 @@ func TestDial(t *testing.T) {
 	log.Printf("[server] Listening on %q\n", listener.Addr().String())
 
 	done := make(chan struct{})
-	shutdown := make(chan struct{})
 	go func() {
 		defer func() {
 			done <- struct{}{}
@@ -39,14 +39,11 @@ func TestDial(t *testing.T) {
 		for {
 			conn, err := listener.Accept()
 			if err != nil {
-				// Err from listener.Accept isn't necessarily fatal. It could be due to closing the listener connection.
-				select {
-				case <-shutdown:
-					return
-				default:
-					t.Log(err)
+				if errors.Is(err, net.ErrClosed) {
+					log.Println("Network connection already closed. Returning.")
 					return
 				}
+				t.Fatal(err)
 			}
 			go func() {
 				if err := handleConn(conn, done); err != nil {
@@ -67,7 +64,6 @@ func TestDial(t *testing.T) {
 	log.Println("[client] Closing dial connection")
 	conn.Close()
 	<-done
-	close(shutdown)
 	listener.Close()
 	<-done
 }
@@ -210,8 +206,11 @@ func TestPingerAdvanceDeadline(t *testing.T) {
 
 		conn, err := listener.Accept()
 		if err != nil {
-			t.Log(err)
-			return
+			if errors.Is(err, net.ErrClosed) {
+				log.Println("Network connection already closed. Returning.")
+				return
+			}
+			t.Fatal(err)
 		}
 		defer conn.Close()
 

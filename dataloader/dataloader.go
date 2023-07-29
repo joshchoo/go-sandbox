@@ -53,10 +53,10 @@ func runSimpleDataLoader() {
 func runMultiDataLoader() {
 	requestsCount := 200
 	counter := atomic.Uint64{}
-	loader := NewMultiRequestDataLoader(func(key string) (int64, error) {
+	loader := NewMultiRequestDataLoader(func(arg int64) (int64, error) {
 		counter.Add(1)
 		time.Sleep(1 * time.Second)
-		return strconv.ParseInt(key, 10, 64)
+		return arg, nil
 	})
 	var wg sync.WaitGroup
 	ctx := context.Background()
@@ -71,7 +71,7 @@ func runMultiDataLoader() {
 		go func(i int) {
 			defer wg.Done()
 			fmt.Printf("submitting request %d\n", i)
-			res, err := loader.Load(ctx, strconv.Itoa(i%10))
+			res, err := loader.Load(ctx, int64Arg(i%10))
 			if err != nil {
 				fmt.Printf("request %d err: %v\n", i, err)
 			} else {
@@ -84,17 +84,35 @@ func runMultiDataLoader() {
 	fmt.Printf("Loader function called %d times.\n", counter.Load())
 }
 
-type MultiRequestDataLoader struct {
-	reqKeyToLoader map[string]*SingleRequestDataLoader
+type LoaderArg[TArg any] interface {
+	Arg() TArg
+	Key() string
+}
+
+type int64Arg int64
+
+func (a int64Arg) Arg() int64 {
+	return int64(a)
+}
+func (a int64Arg) Key() string {
+	return strconv.FormatInt(int64(a), 10)
+}
+
+/*
+Possible improvements:
+- Add ability to evict SingleRequestDataLoader that is infrequently used (e.g. LRU).
+*/
+type MultiRequestDataLoader[TArg any, TRes any] struct {
+	reqKeyToLoader map[string]*SingleRequestDataLoader[TRes]
 	mu             *sync.Mutex
-	loader         func(key string) (int64, error)
+	loader         func(arg TArg) (TRes, error)
 	closed         bool
 	wg             sync.WaitGroup
 }
 
-func NewMultiRequestDataLoader(loader func(key string) (int64, error)) *MultiRequestDataLoader {
-	return &MultiRequestDataLoader{
-		reqKeyToLoader: make(map[string]*SingleRequestDataLoader),
+func NewMultiRequestDataLoader[TArg any, TRes any](loader func(arg TArg) (TRes, error)) *MultiRequestDataLoader[TArg, TRes] {
+	return &MultiRequestDataLoader[TArg, TRes]{
+		reqKeyToLoader: make(map[string]*SingleRequestDataLoader[TRes]),
 		mu:             &sync.Mutex{},
 		loader:         loader,
 		closed:         false,
@@ -102,32 +120,37 @@ func NewMultiRequestDataLoader(loader func(key string) (int64, error)) *MultiReq
 	}
 }
 
-func (r *MultiRequestDataLoader) Load(ctx context.Context, key string) (int64, error) {
+func (r *MultiRequestDataLoader[TArg, TRes]) Load(ctx context.Context, la LoaderArg[TArg]) (TRes, error) {
+	key := la.Key()
+	arg := la.Arg()
+
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()
-		return 0, errors.New("multi request data loader is closed")
+		var zero TRes
+		return zero, errors.New("multi request data loader is closed")
 	}
 	_, ok := r.reqKeyToLoader[key]
 	if !ok {
-		r.reqKeyToLoader[key] = NewSingleRequestDataLoader(func(ctx context.Context) (int64, error) {
-			return r.loader(key)
+		r.reqKeyToLoader[key] = NewSingleRequestDataLoader(func(ctx context.Context) (TRes, error) {
+			return r.loader(arg)
 		})
 	}
 	r.mu.Unlock()
 
-	resCh := make(chan Result)
+	resCh := make(chan Result[TRes])
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()
-		return 0, errors.New("multi request data loader is closed")
+		var zero TRes
+		return zero, errors.New("multi request data loader is closed")
 	}
 	loader := r.reqKeyToLoader[key]
 	r.wg.Add(1)
 	go func() {
 		defer r.wg.Done()
 		res, err := loader.Load(ctx)
-		resCh <- Result{
+		resCh <- Result[TRes]{
 			value: res,
 			err:   err,
 		}
@@ -137,7 +160,7 @@ func (r *MultiRequestDataLoader) Load(ctx context.Context, key string) (int64, e
 	return res.value, res.err
 }
 
-func (r *MultiRequestDataLoader) Close() {
+func (r *MultiRequestDataLoader[TArg, TRes]) Close() {
 	fmt.Println("Closing multi request data loader...")
 	r.mu.Lock()
 	r.closed = true
@@ -146,48 +169,41 @@ func (r *MultiRequestDataLoader) Close() {
 	fmt.Println("Multi request data loader closed!")
 }
 
-type SingleRequestDataLoader struct {
-	requests chan Request
+type SingleRequestDataLoader[TRes any] struct {
+	requests chan Request[TRes]
 	closeCh  chan struct{}
 	done     *sync.WaitGroup
 }
 
-func (r *SingleRequestDataLoader) Close() {
+func (r *SingleRequestDataLoader[TRes]) Close() {
 	close(r.closeCh)
 	fmt.Println("Closing data loader...")
 	r.done.Wait()
 	fmt.Println("Data loader closed!")
 }
 
-func NewSingleRequestDataLoader(loader func(ctx context.Context) (int64, error)) *SingleRequestDataLoader {
-	requests := make(chan Request)
+func NewSingleRequestDataLoader[TRes any](loader func(ctx context.Context) (TRes, error)) *SingleRequestDataLoader[TRes] {
+	requests := make(chan Request[TRes])
 	closeCh := make(chan struct{})
 	var done sync.WaitGroup
 
 	initLoader(requests, loader, closeCh, &done)
 
-	return &SingleRequestDataLoader{
+	return &SingleRequestDataLoader[TRes]{
 		requests: requests,
 		closeCh:  closeCh,
 		done:     &done,
 	}
 }
 
-func initLoader(requests chan Request, loader func(ctx context.Context) (int64, error), closeCh chan struct{}, done *sync.WaitGroup) {
+func initLoader[TRes any](requests chan Request[TRes], loader func(ctx context.Context) (TRes, error), closeCh chan struct{}, done *sync.WaitGroup) {
 	done.Add(1)
-
-	type LoaderState uint8
-
-	const (
-		Idle LoaderState = iota
-		Loading
-	)
 
 	go func() {
 		defer done.Done()
-		resp := make(chan Result, 1)
+		resp := make(chan Result[TRes], 1)
 		state := Idle
-		var subscribers []chan Result
+		var subscribers []chan Result[TRes]
 
 		for {
 			switch state {
@@ -200,7 +216,7 @@ func initLoader(requests chan Request, loader func(ctx context.Context) (int64, 
 					state = Loading
 					go func() {
 						value, err := loader(req.ctx)
-						resp <- Result{
+						resp <- Result[TRes]{
 							value: value,
 							err:   err,
 						}
@@ -223,30 +239,39 @@ func initLoader(requests chan Request, loader func(ctx context.Context) (int64, 
 	}()
 }
 
-type Request struct {
-	ctx context.Context
-	out chan Result
-}
-
-type Result struct {
-	value int64
-	err   error
-}
-
-func (r *SingleRequestDataLoader) Load(ctx context.Context) (int64, error) {
-	subscriber := make(chan Result)
-	req := Request{
+func (r *SingleRequestDataLoader[TRes]) Load(ctx context.Context) (TRes, error) {
+	subscriber := make(chan Result[TRes])
+	req := Request[TRes]{
 		ctx: ctx,
 		out: subscriber,
 	}
 	select {
 	case r.requests <- req:
 	case <-r.closeCh:
-		return 0, errors.New("data loader is closed")
+		var zero TRes
+		return zero, errors.New("data loader is closed")
 	}
 	result := <-subscriber
 	if result.err != nil {
-		return 0, result.err
+		var zero TRes
+		return zero, result.err
 	}
 	return result.value, nil
+}
+
+type LoaderState uint8
+
+const (
+	Idle LoaderState = iota
+	Loading
+)
+
+type Request[TRes any] struct {
+	ctx context.Context
+	out chan Result[TRes]
+}
+
+type Result[TRes any] struct {
+	value TRes
+	err   error
 }

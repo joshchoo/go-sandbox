@@ -53,7 +53,7 @@ func runSimpleDataLoader() {
 func runMultiDataLoader() {
 	requestsCount := 200
 	counter := atomic.Uint64{}
-	loader := NewMultiRequestDataLoader(func(arg int64) (int64, error) {
+	loader := NewMultiRequestDataLoader(func(ctx context.Context, arg int64) (int64, error) {
 		counter.Add(1)
 		time.Sleep(1 * time.Second)
 		return arg, nil
@@ -105,12 +105,12 @@ Possible improvements:
 type MultiRequestDataLoader[TArg any, TRes any] struct {
 	reqKeyToLoader map[string]*SingleRequestDataLoader[TRes]
 	mu             *sync.Mutex
-	loader         func(arg TArg) (TRes, error)
+	loader         func(ctx context.Context, arg TArg) (TRes, error)
 	closed         bool
 	wg             sync.WaitGroup
 }
 
-func NewMultiRequestDataLoader[TArg any, TRes any](loader func(arg TArg) (TRes, error)) *MultiRequestDataLoader[TArg, TRes] {
+func NewMultiRequestDataLoader[TArg any, TRes any](loader func(ctx context.Context, arg TArg) (TRes, error)) *MultiRequestDataLoader[TArg, TRes] {
 	return &MultiRequestDataLoader[TArg, TRes]{
 		reqKeyToLoader: make(map[string]*SingleRequestDataLoader[TRes]),
 		mu:             &sync.Mutex{},
@@ -133,7 +133,7 @@ func (r *MultiRequestDataLoader[TArg, TRes]) Load(ctx context.Context, la Loader
 	_, ok := r.reqKeyToLoader[key]
 	if !ok {
 		r.reqKeyToLoader[key] = NewSingleRequestDataLoader(func(ctx context.Context) (TRes, error) {
-			return r.loader(arg)
+			return r.loader(ctx, arg)
 		})
 	}
 	r.mu.Unlock()

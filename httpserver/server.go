@@ -4,14 +4,21 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 )
 
 func main() {
 	h := http.NewServeMux()
 
-	h.HandleFunc("/ping", func(w http.ResponseWriter, r *http.Request) {
+	h.HandleFunc("GET /ping", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("pong"))
+	})
+
+	h.HandleFunc("GET /assets/{name}", func(w http.ResponseWriter, r *http.Request) {
+		filename := r.PathValue("name")
+		path := filepath.Join("assets", filename)
+		http.ServeFile(w, r, path)
 	})
 
 	s := http.Server{

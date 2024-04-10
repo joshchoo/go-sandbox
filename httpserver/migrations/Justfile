@@ -1,0 +1,5 @@
+new-migration:
+    goose create new_migration sql
+
+migrate-up:
+    GOOSE_DRIVER=sqlite3 GOOSE_DBSTRING=../db.sqlite goose up
